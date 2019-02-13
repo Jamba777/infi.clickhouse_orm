@@ -18,7 +18,6 @@
 bin/
 build/
 dist/
-setup.py
 
 # buildout
 buildout.in.cfg
@@ -62,3 +61,7 @@ htmldocs/
 
 # tox
 .tox/
+
+.idea/
+
+
