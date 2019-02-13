@@ -89,14 +89,13 @@ class IExactOperator(Operator):
         value = field.to_db_string(field.to_python(value, pytz.utc))
         return 'lowerUTF8(%s) = lowerUTF8(%s)' % (field_name, value)
 
+
 class HasOperator(Operator):
     """
     An operator for case insensitive string comparison.
     """
 
     def to_sql(self, model_cls, field_name, value):
-        field = getattr(model_cls, field_name)
-        # value = field.to_db_string(field.to_python(value, pytz.utc))
         if isinstance(value, (tuple, list)):
             return "hasAll(%s, %s) = 1" % (field_name, value)
         return "has(%s, '%s') = 1" % (field_name, value)
@@ -301,9 +300,7 @@ class QuerySet(object):
 
     def first(self, *field_names):
         """
-        Returns a copy of this queryset limited to the specified field names.
-        Useful when there are large fields that are not needed,
-        or for creating a subquery to use with an IN operator.
+        Returns a first row from queryset if row exists else return empty list
         """
         count = self.count()
         return self[0] if count else []
