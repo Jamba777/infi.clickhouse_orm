@@ -1,15 +1,13 @@
 from __future__ import unicode_literals
-
 import six
 import pytz
 from copy import copy
 from math import ceil
-
-from .engines import CollapsingMergeTree
 from .utils import comma_join
 
 
 # TODO
+# - and/or between Q objects
 # - check that field names are valid
 # - operators for arrays: length, has, empty
 
@@ -31,15 +29,12 @@ class SimpleOperator(Operator):
     A simple binary operator such as a=b, a<b, a>b etc.
     """
 
-    def __init__(self, sql_operator, sql_for_null=None):
+    def __init__(self, sql_operator):
         self._sql_operator = sql_operator
-        self._sql_for_null = sql_for_null
 
     def to_sql(self, model_cls, field_name, value):
         field = getattr(model_cls, field_name)
         value = field.to_db_string(field.to_python(value, pytz.utc))
-        if value == '\\N' and self._sql_for_null is not None:
-            return ' '.join([field_name, self._sql_for_null])
         return ' '.join([field_name, self._sql_operator, value])
 
 
@@ -94,6 +89,18 @@ class IExactOperator(Operator):
         value = field.to_db_string(field.to_python(value, pytz.utc))
         return 'lowerUTF8(%s) = lowerUTF8(%s)' % (field_name, value)
 
+class HasOperator(Operator):
+    """
+    An operator for case insensitive string comparison.
+    """
+
+    def to_sql(self, model_cls, field_name, value):
+        field = getattr(model_cls, field_name)
+        # value = field.to_db_string(field.to_python(value, pytz.utc))
+        if isinstance(value, (tuple, list)):
+            return "hasAll(%s, %s) = 1" % (field_name, value)
+        return "has(%s, '%s') = 1" % (field_name, value)
+
 
 class NotOperator(Operator):
     """
@@ -108,29 +115,6 @@ class NotOperator(Operator):
         return 'NOT (%s)' % self._base_operator.to_sql(model_cls, field_name, value)
 
 
-class BetweenOperator(Operator):
-    """
-    An operator that implements BETWEEN.
-    Accepts list or tuple of two elements and generates sql condition:
-    - 'BETWEEN value[0] AND value[1]' if value[0] and value[1] are not None and not empty
-    Then imitations of BETWEEN, where one of two limits is missing
-    - '>= value[0]' if value[1] is None or empty
-    - '<= value[1]' if value[0] is None or empty
-    """
-
-    def to_sql(self, model_cls, field_name, value):
-        field = getattr(model_cls, field_name)
-        value0 = field.to_db_string(
-                field.to_python(value[0], pytz.utc)) if value[0] is not None or len(str(value[0])) > 0 else None
-        value1 = field.to_db_string(
-                field.to_python(value[1], pytz.utc)) if value[1] is not None or len(str(value[1])) > 0 else None
-        if value0 and value1:
-            return '%s BETWEEN %s AND %s' % (field_name, value0, value1)
-        if value0 and not value1:
-            return ' '.join([field_name, '>=', value0])
-        if value1 and not value0:
-            return ' '.join([field_name, '<=', value1])
-
 # Define the set of builtin operators
 
 _operators = {}
@@ -138,13 +122,12 @@ _operators = {}
 def register_operator(name, sql):
     _operators[name] = sql
 
-register_operator('eq',          SimpleOperator('=', 'IS NULL'))
-register_operator('ne',          SimpleOperator('!=', 'IS NOT NULL'))
+register_operator('eq',          SimpleOperator('='))
+register_operator('ne',          SimpleOperator('!='))
 register_operator('gt',          SimpleOperator('>'))
 register_operator('gte',         SimpleOperator('>='))
 register_operator('lt',          SimpleOperator('<'))
 register_operator('lte',         SimpleOperator('<='))
-register_operator('between',     BetweenOperator())
 register_operator('in',          InOperator())
 register_operator('not_in',      NotOperator(InOperator()))
 register_operator('contains',    LikeOperator('%{}%'))
@@ -154,6 +137,7 @@ register_operator('icontains',   LikeOperator('%{}%', False))
 register_operator('istartswith', LikeOperator('{}%', False))
 register_operator('iendswith',   LikeOperator('%{}', False))
 register_operator('iexact',      IExactOperator())
+register_operator('has',      HasOperator())
 
 
 class FOV(object):
@@ -163,11 +147,7 @@ class FOV(object):
 
     def __init__(self, field_name, operator, value):
         self._field_name = field_name
-        self._operator = _operators.get(operator)
-        if self._operator is None:
-            # The field name contains __ like my__field
-            self._field_name = field_name + '__' + operator
-            self._operator = _operators['eq']
+        self._operator = _operators[operator]
         self._value = value
 
     def to_sql(self, model_cls):
@@ -176,23 +156,9 @@ class FOV(object):
 
 class Q(object):
 
-    AND_MODE = 'AND'
-    OR_MODE = 'OR'
-
-    def __init__(self, **filter_fields):
-        self._fovs = [self._build_fov(k, v) for k, v in six.iteritems(filter_fields)]
-        self._l_child = None
-        self._r_child = None
+    def __init__(self, **kwargs):
+        self._fovs = [self._build_fov(k, v) for k, v in six.iteritems(kwargs)]
         self._negate = False
-        self._mode = self.AND_MODE
-
-    @classmethod
-    def _construct_from(cls, l_child, r_child, mode):
-        q = Q()
-        q._l_child = l_child
-        q._r_child = r_child
-        q._mode = mode # AND/OR
-        return q
 
     def _build_fov(self, key, value):
         if '__' in key:
@@ -202,23 +168,12 @@ class Q(object):
         return FOV(field_name, operator, value)
 
     def to_sql(self, model_cls):
-        if self._fovs:
-            sql = ' {} '.format(self._mode).join(fov.to_sql(model_cls) for fov in self._fovs)
-        else:
-            if self._l_child and self._r_child:
-                sql = '({} {} {})'.format(
-                        self._l_child.to_sql(model_cls), self._mode, self._r_child.to_sql(model_cls))
-            else:
-                return '1'
+        if not self._fovs:
+            return '1'
+        sql = ' AND '.join(fov.to_sql(model_cls) for fov in self._fovs)
         if self._negate:
             sql = 'NOT (%s)' % sql
         return sql
-
-    def __or__(self, other):
-        return Q._construct_from(self, other, self.OR_MODE)
-
-    def __and__(self, other):
-        return Q._construct_from(self, other, self.AND_MODE)
 
     def __invert__(self):
         q = copy(self)
@@ -243,10 +198,9 @@ class QuerySet(object):
         self._database = database
         self._order_by = []
         self._q = []
-        self._fields = model_cls.fields().keys()
+        self._fields = []
         self._limits = None
         self._distinct = False
-        self._final = False
 
     def __iter__(self):
         """
@@ -294,10 +248,9 @@ class QuerySet(object):
             fields = comma_join('`%s`' % field for field in self._fields)
         ordering = '\nORDER BY ' + self.order_by_as_sql() if self._order_by else ''
         limit = '\nLIMIT %d, %d' % self._limits if self._limits else ''
-        final = ' FINAL' if self._final else ''
-        params = (distinct, fields, self._model_cls.table_name(), final,
+        params = (distinct, fields, self._model_cls.table_name(),
                   self.conditions_as_sql(), ordering, limit)
-        return u'SELECT %s%s\nFROM `%s`%s\nWHERE %s%s%s' % params
+        return u'SELECT %s%s\nFROM `%s`\nWHERE %s%s%s' % params
 
     def order_by_as_sql(self):
         """
@@ -321,12 +274,11 @@ class QuerySet(object):
         """
         Returns the number of matching model instances.
         """
-        if self._distinct or self._limits:
+        if self._distinct:
             # Use a subquery, since a simple count won't be accurate
             sql = u'SELECT count() FROM (%s)' % self.as_sql()
             raw = self._database.raw(sql)
             return int(raw) if raw else 0
-        # Simple case
         return self._database.count(self._model_cls, self.conditions_as_sql())
 
     def order_by(self, *field_names):
@@ -347,24 +299,29 @@ class QuerySet(object):
         qs._fields = field_names
         return qs
 
-    def filter(self, *q, **filter_fields):
+    def first(self, *field_names):
+        """
+        Returns a copy of this queryset limited to the specified field names.
+        Useful when there are large fields that are not needed,
+        or for creating a subquery to use with an IN operator.
+        """
+        count = self.count()
+        return self[0] if count else []
+
+    def filter(self, **kwargs):
         """
         Returns a copy of this queryset that includes only rows matching the conditions.
-        Add q object to query if it specified.
         """
         qs = copy(self)
-        if q:
-            qs._q = list(self._q) + list(q)
-        else:
-            qs._q = list(self._q) + [Q(**filter_fields)]
+        qs._q = list(self._q) + [Q(**kwargs)]
         return qs
 
-    def exclude(self, **filter_fields):
+    def exclude(self, **kwargs):
         """
         Returns a copy of this queryset that excludes all rows matching the conditions.
         """
         qs = copy(self)
-        qs._q = list(self._q) + [~Q(**filter_fields)]
+        qs._q = list(self._q) + [~Q(**kwargs)]
         return qs
 
     def paginate(self, page_num=1, page_size=100):
@@ -402,18 +359,6 @@ class QuerySet(object):
         """
         qs = copy(self)
         qs._distinct = True
-        return qs
-
-    def final(self):
-        """
-        Adds a FINAL modifier to table, meaning data will be collapsed to final version.
-        Can be used with `CollapsingMergeTree` engine only.
-        """
-        if not isinstance(self._model_cls.engine, CollapsingMergeTree):
-            raise TypeError('final() method can be used only with CollapsingMergeTree engine')
-
-        qs = copy(self)
-        qs._final = True
         return qs
 
     def aggregate(self, *args, **kwargs):
