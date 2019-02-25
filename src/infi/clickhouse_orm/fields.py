@@ -168,7 +168,7 @@ class DateTimeField(Field):
         if isinstance(value, int):
             return datetime.datetime.utcfromtimestamp(value).replace(tzinfo=pytz.utc)
         if isinstance(value, string_types):
-            if value == '0000-00-00 00:00:00':
+            if value == '0000-00-00 00:00:00' or not value:
                 return self.class_default
             if len(value) == 10:
                 try:

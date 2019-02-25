@@ -63,5 +63,6 @@ htmldocs/
 .tox/
 
 .idea/
+.idea/*
 
 
