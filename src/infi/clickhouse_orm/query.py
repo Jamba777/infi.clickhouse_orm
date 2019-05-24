@@ -318,7 +318,7 @@ class QuerySet(object):
         Returns a copy of this queryset that excludes all rows matching the conditions.
         """
         qs = copy(self)
-        qs._q = list(self._q) + [~Q(**kwargs)]
+        qs._q = list(self._q) + [~Q(**{k: v}) for k, v in kwargs.items()]
         return qs
 
     def paginate(self, page_num=1, page_size=100):
