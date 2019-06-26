@@ -74,7 +74,7 @@ class Database(object):
 
     def __init__(self, db_name, db_url='http://localhost:8123/',
                  username=None, password=None, readonly=False, autocreate=True,
-                 timeout=60, verify_ssl_cert=True, log_queries=0):
+                 timeout=60, verify_ssl_cert=True, extra_params=None):
         '''
         Initializes a database instance. Unless it's readonly, the database will be
         created on the ClickHouse server if it does not already exist.
@@ -96,7 +96,7 @@ class Database(object):
         self.timeout = timeout
         self.request_session = requests.Session()
         self.request_session.verify = verify_ssl_cert
-        self.log_queries = log_queries
+        self.extra_params = extra_params
         self.settings = {}
         self.db_exists = False # this is required before running _is_existing_database
         self.db_exists = self._is_existing_database()
@@ -344,8 +344,8 @@ class Database(object):
         # Send the readonly flag, unless the connection is already readonly (to prevent db error)
         if self.readonly and not self.connection_readonly:
             params['readonly'] = '1'
-        if self.log_queries:
-            params['log_queries'] = '1'
+        if self.extra_params:
+            params.update(extra_params)
         return params
 
     def _substitute(self, query, model_class=None):
