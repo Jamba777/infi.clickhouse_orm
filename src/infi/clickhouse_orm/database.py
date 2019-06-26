@@ -345,7 +345,7 @@ class Database(object):
         if self.readonly and not self.connection_readonly:
             params['readonly'] = '1'
         if self.extra_params:
-            params.update(extra_params)
+            params.update(self.extra_params)
         return params
 
     def _substitute(self, query, model_class=None):
