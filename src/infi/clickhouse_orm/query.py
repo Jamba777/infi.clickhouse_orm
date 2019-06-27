@@ -97,7 +97,7 @@ class HasOperator(Operator):
 
     def to_sql(self, model_cls, field_name, value):
         if isinstance(value, (tuple, list)):
-            return "hasAll(%s, %s) = 1" % (field_name, value)
+            return "hasAny(%s, %s) = 1" % (field_name, value)
         return "has(%s, '%s') = 1" % (field_name, value)
 
 
